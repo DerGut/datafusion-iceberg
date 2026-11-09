@@ -21,13 +21,13 @@ use std::sync::Arc;
 use datafusion::catalog::{CatalogProvider, SchemaProvider};
 use datafusion::error::Result;
 use futures::future::try_join_all;
-use iceberg::{Catalog, NamespaceIdent};
+use iceberg::{Catalog, NamespaceIdent, SessionCatalog};
 
+use super::adapter::SessionBindingCatalogAdapter;
 use super::schema::IcebergSchemaProvider;
 use crate::to_datafusion_error;
 
-/// Provides an interface to manage and access multiple schemas
-/// within an Iceberg [`Catalog`].
+/// Provides an interface to manage and access schemas in an Iceberg [`SessionCatalog`].
 ///
 /// Acts as a centralized catalog provider that aggregates
 /// multiple [`SchemaProvider`], each associated with distinct namespaces.
@@ -40,14 +40,20 @@ pub struct IcebergCatalogProvider {
 }
 
 impl IcebergCatalogProvider {
-    /// Asynchronously tries to construct a new [`IcebergCatalogProvider`]
-    /// using the given client to fetch and initialize schema providers for
-    /// each namespace in the Iceberg [`Catalog`].
+    /// Creates a provider backed by an Iceberg [`SessionCatalog`].
     ///
-    /// This method retrieves the list of namespace names
-    /// attempts to create a schema provider for each namespace, and
-    /// collects these providers into a `HashMap`.
-    pub async fn try_new(client: Arc<dyn Catalog>) -> Result<Self> {
+    /// Scans and inserts propagate the DataFusion session ID and configured
+    /// [`crate::IcebergOptions`]. Without those options, they use the provider's
+    /// shared anonymous fallback context.
+    ///
+    /// Provider initialization, metadata-table lookup, and SQL `CREATE TABLE`
+    /// and `DROP TABLE` do not receive a DataFusion session and always use that
+    /// fallback context. Namespace and table discovery happens once during
+    /// construction and is shared by all sessions. The catalog must allow the
+    /// fallback context to discover the intended namespaces, tables, and schemas;
+    /// this provider does not implement per-session discovery or visibility.
+    pub async fn try_new(catalog: Arc<dyn SessionCatalog>) -> Result<Self> {
+        let client = Arc::new(SessionBindingCatalogAdapter::new(catalog));
         // TODO:
         // Schemas and providers should be cached and evicted based on time
         // As of right now; schemas might become stale.

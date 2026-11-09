@@ -15,7 +15,10 @@
 // specific language governing permissions and limitations
 // under the License.
 
+pub(crate) mod adapter;
 mod provider;
 mod schema;
+mod session_dropping_adapter;
 
 pub use provider::IcebergCatalogProvider;
+pub use session_dropping_adapter::SessionDroppingCatalogAdapter;

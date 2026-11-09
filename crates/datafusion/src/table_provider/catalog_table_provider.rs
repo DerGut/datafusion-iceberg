@@ -32,8 +32,9 @@ use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use iceberg::arrow::schema_to_arrow_schema;
 use iceberg::inspect::MetadataTableType;
 use iceberg::spec::TableProperties;
-use iceberg::{Catalog, NamespaceIdent, TableIdent};
+use iceberg::{Catalog, NamespaceIdent, SessionCatalog, TableIdent};
 
+use crate::catalog::adapter::SessionBindingCatalogAdapter;
 use crate::error::to_datafusion_error;
 use crate::metadata::table::IcebergMetadataTableProvider;
 use crate::read::IcebergDataSource;
@@ -54,7 +55,7 @@ use crate::write::sort::sort_by_partition;
 #[derive(Debug, Clone)]
 pub struct IcebergCatalogTableProvider {
     /// The catalog that manages this table
-    catalog: Arc<dyn Catalog>,
+    catalog: Arc<SessionBindingCatalogAdapter>,
     /// The table identifier (namespace + name)
     table_ident: TableIdent,
     /// A reference-counted arrow `Schema` (cached at construction)
@@ -62,12 +63,27 @@ pub struct IcebergCatalogTableProvider {
 }
 
 impl IcebergCatalogTableProvider {
-    /// Creates a new catalog-backed table provider.
+    /// Creates a table provider backed by a [`SessionCatalog`].
     ///
-    /// Loads the table once to get the initial schema, then stores the catalog
-    /// reference for future metadata refreshes on each operation.
+    /// Initial schema loading uses a shared anonymous fallback context. Scans
+    /// and inserts use the DataFusion session ID and [`crate::IcebergOptions`]
+    /// when registered, or the fallback context otherwise. Inserts retain the
+    /// context resolved during planning through the commit, including retries.
     pub async fn try_new(
-        catalog: Arc<dyn Catalog>,
+        catalog: Arc<dyn SessionCatalog>,
+        namespace: NamespaceIdent,
+        name: impl Into<String>,
+    ) -> Result<Self> {
+        Self::try_new_with_binding(
+            Arc::new(SessionBindingCatalogAdapter::new(catalog)),
+            namespace,
+            name,
+        )
+        .await
+    }
+
+    pub(crate) async fn try_new_with_binding(
+        catalog: Arc<SessionBindingCatalogAdapter>,
         namespace: NamespaceIdent,
         name: impl Into<String>,
     ) -> Result<Self> {
@@ -103,9 +119,12 @@ impl IcebergCatalogTableProvider {
         Ok(IcebergMetadataTableProvider::new(table, r#type))
     }
 
-    /// The catalog this provider loads its table from and commits through.
-    pub fn catalog(&self) -> &Arc<dyn Catalog> {
-        &self.catalog
+    /// The session catalog this provider loads its table from and commits through.
+    ///
+    /// This is the original catalog, without a bound context, so a provider
+    /// rebuilt from it continues to propagate each query's session.
+    pub fn catalog(&self) -> &Arc<dyn SessionCatalog> {
+        self.catalog.catalog()
     }
 
     /// The identifier of the table this provider reads and writes.
@@ -126,7 +145,7 @@ impl TableProvider for IcebergCatalogTableProvider {
 
     async fn scan(
         &self,
-        _state: &dyn Session,
+        state: &dyn Session,
         projection: Option<&Vec<usize>>,
         filters: &[Expr],
         limit: Option<usize>,
@@ -134,6 +153,7 @@ impl TableProvider for IcebergCatalogTableProvider {
         // Load fresh table metadata from catalog
         let table = self
             .catalog
+            .with_session(state)
             .load_table(&self.table_ident)
             .await
             .map_err(to_datafusion_error)?;
@@ -167,9 +187,9 @@ impl TableProvider for IcebergCatalogTableProvider {
             );
         }
 
-        // Load fresh table metadata from catalog
-        let table = self
-            .catalog
+        // Retain the planning context through the final commit.
+        let catalog = self.catalog.with_session(state);
+        let table = catalog
             .load_table(&self.table_ident)
             .await
             .map_err(to_datafusion_error)?;
@@ -221,7 +241,7 @@ impl TableProvider for IcebergCatalogTableProvider {
 
         Ok(Arc::new(IcebergCommitExec::new(
             table,
-            self.catalog.clone(),
+            catalog,
             coalesce_partitions,
         )))
     }
@@ -256,6 +276,8 @@ mod tests {
         )
         .await
         .unwrap();
+
+        assert!(Arc::ptr_eq(provider.catalog(), &catalog));
 
         // Verify the schema is loaded correctly
         let schema = provider.schema();
@@ -449,7 +471,10 @@ mod tests {
         let (catalog, namespace, table_name, _temp_dir) =
             get_test_catalog_and_table().await;
         let table_ident = TableIdent::new(namespace, table_name);
-        let table = catalog.load_table(&table_ident).await.unwrap();
+        let table = catalog
+            .load_table(&iceberg::SessionContext::empty(), &table_ident)
+            .await
+            .unwrap();
         let schema =
             Arc::new(schema_to_arrow_schema(table.metadata().current_schema()).unwrap());
         let out_of_range = schema.fields().len();
@@ -480,7 +505,7 @@ mod tests {
     }
 
     async fn get_test_catalog_and_table()
-    -> (Arc<dyn Catalog>, NamespaceIdent, String, TempDir) {
+    -> (Arc<dyn SessionCatalog>, NamespaceIdent, String, TempDir) {
         let temp_dir = TempDir::new().unwrap();
         let warehouse_path = temp_dir.path().to_str().unwrap().to_string();
 
@@ -525,7 +550,7 @@ mod tests {
             .unwrap();
 
         (
-            Arc::new(catalog),
+            Arc::new(crate::SessionDroppingCatalogAdapter::new(Arc::new(catalog))),
             namespace,
             "test_table".to_string(),
             temp_dir,
@@ -604,7 +629,7 @@ mod tests {
 
     async fn get_partitioned_test_catalog_and_table(
         fanout_enabled: Option<bool>,
-    ) -> (Arc<dyn Catalog>, NamespaceIdent, String, TempDir) {
+    ) -> (Arc<dyn SessionCatalog>, NamespaceIdent, String, TempDir) {
         use iceberg::spec::{Transform, UnboundPartitionField, UnboundPartitionSpec};
 
         let temp_dir = TempDir::new().unwrap();
@@ -677,7 +702,7 @@ mod tests {
             .unwrap();
 
         (
-            Arc::new(catalog),
+            Arc::new(crate::SessionDroppingCatalogAdapter::new(Arc::new(catalog))),
             namespace,
             "partitioned_table".to_string(),
             temp_dir,

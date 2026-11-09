@@ -24,8 +24,8 @@ use datafusion::catalog::{CatalogProvider, CatalogProviderList};
 use fs_err::read_to_string;
 use iceberg::CatalogBuilder;
 use iceberg::memory::MemoryCatalogBuilder;
-use iceberg_catalog_rest::RestCatalogBuilder;
-use iceberg_datafusion::IcebergCatalogProvider;
+use iceberg_catalog_rest::RestSessionCatalogBuilder;
+use iceberg_datafusion::{IcebergCatalogProvider, SessionDroppingCatalogAdapter};
 use toml::{Table as TomlTable, Value};
 
 const CONFIG_NAME_CATALOGS: &str = "catalogs";
@@ -96,11 +96,15 @@ impl IcebergCatalogList {
         }
 
         // Create catalog based on type using the appropriate builder
-        let catalog: Arc<dyn iceberg::Catalog> = match r#type {
-            "rest" => Arc::new(RestCatalogBuilder::default().load(name, props).await?),
-            "memory" => {
-                Arc::new(MemoryCatalogBuilder::default().load(name, props).await?)
-            }
+        let catalog: Arc<dyn iceberg::SessionCatalog> = match r#type {
+            "rest" => Arc::new(
+                RestSessionCatalogBuilder::default()
+                    .load(name, props)
+                    .await?,
+            ),
+            "memory" => Arc::new(SessionDroppingCatalogAdapter::new(Arc::new(
+                MemoryCatalogBuilder::default().load(name, props).await?,
+            ))),
             _ => {
                 return Err(anyhow::anyhow!(
                     "Unsupported catalog type: '{type}'. Supported types: rest, memory"

@@ -32,15 +32,16 @@ use iceberg::inspect::MetadataTableType;
 use iceberg::spec::FormatVersion;
 use iceberg::{Catalog, NamespaceIdent, TableCreation, TableIdent};
 
+use super::adapter::SessionBindingCatalogAdapter;
 use crate::table_provider::IcebergCatalogTableProvider;
 use crate::to_datafusion_error;
 
-/// Represents a [`SchemaProvider`] for the Iceberg [`Catalog`], managing
+/// Represents a [`SchemaProvider`] for an Iceberg catalog, managing
 /// access to table providers within a specific namespace.
 #[derive(Debug)]
 pub(crate) struct IcebergSchemaProvider {
     /// Reference to the Iceberg catalog
-    catalog: Arc<dyn Catalog>,
+    catalog: Arc<SessionBindingCatalogAdapter>,
     /// The namespace this schema represents
     namespace: NamespaceIdent,
     /// A concurrent map where keys are table names
@@ -53,13 +54,12 @@ pub(crate) struct IcebergSchemaProvider {
 impl IcebergSchemaProvider {
     /// Asynchronously tries to construct a new [`IcebergSchemaProvider`]
     /// using the given client to fetch and initialize table providers for
-    /// the provided namespace in the Iceberg [`Catalog`].
+    /// the provided namespace in the Iceberg catalog.
     ///
-    /// This method retrieves a list of table names
-    /// attempts to create a table provider for each table name, and
-    /// collects these providers into a `HashMap`.
+    /// This method retrieves a list of table names, creates a table provider for
+    /// each name, and collects these providers into a [`DashMap`].
     pub(crate) async fn try_new(
-        client: Arc<dyn Catalog>,
+        client: Arc<SessionBindingCatalogAdapter>,
         namespace: NamespaceIdent,
     ) -> Result<Self> {
         // TODO:
@@ -78,7 +78,7 @@ impl IcebergSchemaProvider {
             table_names
                 .iter()
                 .map(|name| {
-                    IcebergCatalogTableProvider::try_new(
+                    IcebergCatalogTableProvider::try_new_with_binding(
                         client.clone(),
                         namespace.clone(),
                         name,
@@ -191,7 +191,7 @@ impl SchemaProvider for IcebergSchemaProvider {
                     .map_err(to_datafusion_error)?;
 
                 // Create a new table provider using the catalog reference
-                let table_provider = IcebergCatalogTableProvider::try_new(
+                let table_provider = IcebergCatalogTableProvider::try_new_with_binding(
                     catalog.clone(),
                     namespace.clone(),
                     name_clone.clone(),
@@ -303,9 +303,14 @@ mod tests {
             .await
             .unwrap();
 
-        let provider = IcebergSchemaProvider::try_new(Arc::new(catalog), namespace)
-            .await
-            .unwrap();
+        let provider = IcebergSchemaProvider::try_new(
+            Arc::new(SessionBindingCatalogAdapter::new(Arc::new(
+                crate::SessionDroppingCatalogAdapter::new(Arc::new(catalog)),
+            ))),
+            namespace,
+        )
+        .await
+        .unwrap();
 
         (provider, temp_dir)
     }

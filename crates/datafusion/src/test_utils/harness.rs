@@ -40,7 +40,9 @@ use iceberg::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::{IcebergCatalogProvider, IcebergTableProviderFactory};
+use crate::{
+    IcebergCatalogProvider, IcebergTableProviderFactory, SessionDroppingCatalogAdapter,
+};
 
 pub const FIXTURE_URI: &str = "s3://iceberg-test/warehouse/taxi";
 const WAREHOUSE_URI: &str = "s3://iceberg-test/warehouse/";
@@ -91,7 +93,10 @@ impl IcebergTestHarness {
             .await
             .map_err(crate::to_datafusion_error)?;
 
-        let provider = IcebergCatalogProvider::try_new(Arc::new(catalog)).await?;
+        let provider = IcebergCatalogProvider::try_new(Arc::new(
+            SessionDroppingCatalogAdapter::new(Arc::new(catalog)),
+        ))
+        .await?;
 
         let ctx = SessionContext::new_with_state(state);
         ctx.register_catalog(CATALOG_NAME, Arc::new(provider));

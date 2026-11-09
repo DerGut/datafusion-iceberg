@@ -44,7 +44,7 @@ use iceberg::spec::{
 use iceberg::transaction::{AddColumn, ApplyTransactionAction, Transaction};
 use iceberg::{
     Catalog, CatalogBuilder, MemoryCatalog, NamespaceIdent, Result as IcebergResult,
-    TableCreation, TableIdent,
+    SessionCatalog, TableCreation, TableIdent,
 };
 use iceberg_datafusion::metadata::{
     IcebergMetadataDataSource, IcebergMetadataTableProvider,
@@ -53,8 +53,13 @@ use iceberg_datafusion::read::IcebergDataSource;
 use iceberg_datafusion::write::{IcebergCommitExec, IcebergWriteExec};
 use iceberg_datafusion::{
     IcebergCatalogProvider, IcebergCatalogTableProvider, IcebergStaticTableProvider,
+    SessionDroppingCatalogAdapter,
 };
 use tempfile::TempDir;
+
+fn as_session_catalog(catalog: Arc<dyn Catalog>) -> Arc<dyn SessionCatalog> {
+    Arc::new(SessionDroppingCatalogAdapter::new(catalog))
+}
 
 fn display_schema(schema: &ArrowSchema) -> String {
     schema
@@ -137,7 +142,8 @@ async fn test_provider_plan_stream_schema() -> Result<(), Box<dyn Error>> {
     iceberg_catalog.create_table(&namespace, creation).await?;
 
     let client = Arc::new(iceberg_catalog);
-    let catalog = Arc::new(IcebergCatalogProvider::try_new(client).await?);
+    let catalog =
+        Arc::new(IcebergCatalogProvider::try_new(as_session_catalog(client)).await?);
 
     let ctx = SessionContext::new();
     ctx.register_catalog("catalog", catalog);
@@ -190,7 +196,8 @@ async fn test_provider_list_table_names() -> Result<(), Box<dyn Error>> {
     iceberg_catalog.create_table(&namespace, creation).await?;
 
     let client = Arc::new(iceberg_catalog);
-    let catalog = Arc::new(IcebergCatalogProvider::try_new(client).await?);
+    let catalog =
+        Arc::new(IcebergCatalogProvider::try_new(as_session_catalog(client)).await?);
 
     let ctx = SessionContext::new();
     ctx.register_catalog("catalog", catalog);
@@ -219,7 +226,8 @@ async fn test_provider_list_schema_names() -> Result<(), Box<dyn Error>> {
     set_test_namespace(&iceberg_catalog, &namespace).await?;
 
     let client = Arc::new(iceberg_catalog);
-    let catalog = Arc::new(IcebergCatalogProvider::try_new(client).await?);
+    let catalog =
+        Arc::new(IcebergCatalogProvider::try_new(as_session_catalog(client)).await?);
 
     let ctx = SessionContext::new();
     ctx.register_catalog("catalog", catalog);
@@ -256,7 +264,8 @@ async fn test_table_projection() -> Result<(), Box<dyn Error>> {
     iceberg_catalog.create_table(&namespace, creation).await?;
 
     let client = Arc::new(iceberg_catalog);
-    let catalog = Arc::new(IcebergCatalogProvider::try_new(client).await?);
+    let catalog =
+        Arc::new(IcebergCatalogProvider::try_new(as_session_catalog(client)).await?);
 
     let ctx = SessionContext::new();
     ctx.register_catalog("catalog", catalog);
@@ -327,7 +336,8 @@ async fn test_table_predict_pushdown() -> Result<(), Box<dyn Error>> {
     iceberg_catalog.create_table(&namespace, creation).await?;
 
     let client = Arc::new(iceberg_catalog);
-    let catalog = Arc::new(IcebergCatalogProvider::try_new(client).await?);
+    let catalog =
+        Arc::new(IcebergCatalogProvider::try_new(as_session_catalog(client)).await?);
 
     let ctx = SessionContext::new();
     ctx.register_catalog("catalog", catalog);
@@ -373,7 +383,8 @@ async fn test_metadata_table() -> Result<(), Box<dyn Error>> {
     iceberg_catalog.create_table(&namespace, creation).await?;
 
     let client = Arc::new(iceberg_catalog);
-    let catalog = Arc::new(IcebergCatalogProvider::try_new(client).await?);
+    let catalog =
+        Arc::new(IcebergCatalogProvider::try_new(as_session_catalog(client)).await?);
 
     let ctx = SessionContext::new();
     ctx.register_catalog("catalog", catalog);
@@ -430,7 +441,9 @@ async fn test_insert_into() -> Result<(), Box<dyn Error>> {
     iceberg_catalog.create_table(&namespace, creation).await?;
 
     let client = Arc::new(iceberg_catalog);
-    let catalog = Arc::new(IcebergCatalogProvider::try_new(client.clone()).await?);
+    let catalog = Arc::new(
+        IcebergCatalogProvider::try_new(as_session_catalog(client.clone())).await?,
+    );
 
     let ctx = SessionContext::new();
     ctx.register_catalog("catalog", catalog);
@@ -563,7 +576,9 @@ async fn test_insert_into_nested() -> Result<(), Box<dyn Error>> {
     iceberg_catalog.create_table(&namespace, creation).await?;
 
     let client = Arc::new(iceberg_catalog);
-    let catalog = Arc::new(IcebergCatalogProvider::try_new(client.clone()).await?);
+    let catalog = Arc::new(
+        IcebergCatalogProvider::try_new(as_session_catalog(client.clone())).await?,
+    );
 
     let ctx = SessionContext::new();
     ctx.register_catalog("catalog", catalog);
@@ -770,7 +785,9 @@ async fn test_insert_into_partitioned() -> Result<(), Box<dyn Error>> {
     iceberg_catalog.create_table(&namespace, creation).await?;
 
     let client = Arc::new(iceberg_catalog);
-    let catalog = Arc::new(IcebergCatalogProvider::try_new(client.clone()).await?);
+    let catalog = Arc::new(
+        IcebergCatalogProvider::try_new(as_session_catalog(client.clone())).await?,
+    );
 
     // One task must return all five partition files in the same Avro payload.
     let ctx =
@@ -951,7 +968,8 @@ async fn test_plan_nodes_are_inspectable() -> Result<(), Box<dyn Error>> {
     let client: Arc<dyn Catalog> = Arc::new(iceberg_catalog);
 
     let ctx = SessionContext::new();
-    let catalog = IcebergCatalogProvider::try_new(client.clone()).await?;
+    let session_catalog = as_session_catalog(client.clone());
+    let catalog = IcebergCatalogProvider::try_new(session_catalog.clone()).await?;
     ctx.register_catalog("catalog", Arc::new(catalog));
     let provider = ctx
         .table_provider("catalog.test_plan_nodes.my_table")
@@ -960,7 +978,7 @@ async fn test_plan_nodes_are_inspectable() -> Result<(), Box<dyn Error>> {
         .downcast_ref::<IcebergCatalogTableProvider>()
         .expect("a catalog-backed provider");
     assert_eq!(provider.table_ident(), &ident);
-    assert!(Arc::ptr_eq(provider.catalog(), &client));
+    assert!(Arc::ptr_eq(provider.catalog(), &session_catalog));
     let rebuilt = IcebergCatalogTableProvider::try_new(
         provider.catalog().clone(),
         provider.table_ident().namespace().clone(),
@@ -984,7 +1002,10 @@ async fn test_plan_nodes_are_inspectable() -> Result<(), Box<dyn Error>> {
         .downcast_ref::<IcebergCommitExec>()
         .expect("the insert plan is rooted at a commit");
     assert_eq!(commit.table().identifier(), &ident);
-    assert!(Arc::ptr_eq(commit.catalog(), &client));
+    assert_eq!(
+        commit.catalog().load_table(&ident).await?.identifier(),
+        &ident
+    );
     let write = find_node::<IcebergWriteExec>(&insert).expect("a write below the commit");
     assert_eq!(write.table().identifier(), &ident);
     let rebuilt_write: Arc<dyn ExecutionPlan> = Arc::new(IcebergWriteExec::new(
@@ -1221,8 +1242,12 @@ async fn test_scan_after_schema_evolution_reads_provider_columns()
     let client: Arc<dyn Catalog> = Arc::new(iceberg_catalog);
 
     let provider = Arc::new(
-        IcebergCatalogTableProvider::try_new(client.clone(), namespace, "my_table")
-            .await?,
+        IcebergCatalogTableProvider::try_new(
+            as_session_catalog(client.clone()),
+            namespace,
+            "my_table",
+        )
+        .await?,
     );
     let ctx = SessionContext::new();
     ctx.register_table("t", provider.clone())?;
@@ -1245,7 +1270,7 @@ async fn test_scan_after_schema_evolution_reads_provider_columns()
     // A scan reads the schema of the snapshot it reads, so write a snapshot
     // with the new column, through a provider that sees it.
     let evolved = IcebergCatalogTableProvider::try_new(
-        client.clone(),
+        as_session_catalog(client.clone()),
         ident.namespace().clone(),
         ident.name(),
     )

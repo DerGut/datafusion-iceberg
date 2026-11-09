@@ -29,7 +29,7 @@ use iceberg::spec::{
     UnboundPartitionField, UnboundPartitionSpec,
 };
 use iceberg::{Catalog, CatalogBuilder, NamespaceIdent, TableCreation};
-use iceberg_datafusion::IcebergCatalogProvider;
+use iceberg_datafusion::{IcebergCatalogProvider, SessionDroppingCatalogAdapter};
 use indicatif::ProgressBar;
 
 use crate::engine::{DatafusionCatalogConfig, EngineRunner, run_slt_with_runner};
@@ -109,7 +109,10 @@ impl DataFusionEngine {
         Self::create_encrypted_table(&catalog, &namespace).await?;
 
         Ok(Arc::new(
-            IcebergCatalogProvider::try_new(Arc::new(catalog)).await?,
+            IcebergCatalogProvider::try_new(Arc::new(
+                SessionDroppingCatalogAdapter::new(Arc::new(catalog)),
+            ))
+            .await?,
         ))
     }
 

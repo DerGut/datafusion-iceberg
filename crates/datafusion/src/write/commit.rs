@@ -53,6 +53,7 @@ use crate::to_datafusion_error;
 #[derive(Debug)]
 pub struct IcebergCommitExec {
     table: Table,
+    /// Catalog bound to the context resolved during insert planning, if session-aware.
     catalog: Arc<dyn Catalog>,
     input: Arc<dyn ExecutionPlan>,
     count_schema: ArrowSchemaRef,
@@ -864,7 +865,7 @@ mod tests {
         ctx.register_table("source_table", source_table)?;
 
         let iceberg_table_provider = IcebergCatalogTableProvider::try_new(
-            catalog.clone(),
+            Arc::new(crate::SessionDroppingCatalogAdapter::new(catalog.clone())),
             namespace.clone(),
             table_name.to_string(),
         )

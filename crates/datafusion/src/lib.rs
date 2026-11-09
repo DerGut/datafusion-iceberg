@@ -21,6 +21,9 @@ pub use catalog::*;
 mod error;
 pub use error::*;
 
+mod options;
+pub use options::IcebergOptions;
+
 pub mod metadata;
 pub mod read;
 pub mod table_provider;
